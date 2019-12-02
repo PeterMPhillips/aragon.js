@@ -258,6 +258,35 @@ export class AppProxy {
   }
 
   /**
+   * Request a token be added. The wrapper will lookup the token metadata using the address.
+   *   *
+   * @param  {string} address Address to register.
+   * @return {Observable} Single-emission Observable that emits if the modification succeeded and errors if cancelled by the user
+   */
+  requestTokenAddressRegistration (address) {
+    return this.rpc.sendAndObserveResponse(
+      'token_registry',
+      ['register', address]
+    ).pipe(
+      pluck('result')
+    )
+  }
+
+  /**
+   * Subscribe to token changes
+   *
+   * @return {Observable} Multi-emission Observable that emits an updated token state upon changes to the token
+   */
+  tokens () {
+    return this.rpc.sendAndObserveResponses(
+      'token_registry',
+      ['subscribe']
+    ).pipe(
+      pluck('result')
+    )
+  }
+
+  /**
    * Perform a read-only call on the app's smart contract.
    *
    * @param  {string} method The name of the method to call.

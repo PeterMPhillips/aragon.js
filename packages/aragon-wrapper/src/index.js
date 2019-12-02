@@ -38,6 +38,7 @@ import { setConfiguration } from './configuration'
 import * as configurationKeys from './configuration/keys'
 import ens from './ens'
 import { LocalIdentityProvider } from './identity'
+import TokenRegistry from './tokens'
 import { getAbi } from './interfaces'
 import {
   postprocessRadspecDescription,
@@ -186,6 +187,7 @@ export default class Aragon {
     await this.initAccounts(options.accounts)
     await this.initAcl(Object.assign({ aclAddress }, options.acl))
     await this.initIdentityProviders()
+    await this.initTokenRegistry()
     this.initApps()
     this.initForwarders()
     this.initAppIdentifiers()
@@ -997,6 +999,17 @@ export default class Aragon {
   }
 
   /**
+   * Initialise tokens cache
+   *
+   * @return {Promise<void>}
+   */
+  async initTokenRegistry () {
+    console.log('Init Token Registry')
+    this.tokens = new TokenRegistry
+    return this.tokens.init()
+  }
+
+  /**
    * Initialise the network observable.
    *
    * @return {Promise<void>}
@@ -1127,7 +1140,8 @@ export default class Aragon {
         // Identity handlers
         handlers.createRequestHandler(request$, 'identify', handlers.appIdentifier),
         handlers.createRequestHandler(request$, 'address_identity', handlers.addressIdentity),
-        handlers.createRequestHandler(request$, 'search_identities', handlers.searchIdentities)
+        handlers.createRequestHandler(request$, 'search_identities', handlers.searchIdentities),
+        handlers.createRequestHandler(request$, 'token_registry', handlers.tokenRegistry)
       ).subscribe(
         (response) => messenger.sendResponse(response.id, response.payload)
       )
