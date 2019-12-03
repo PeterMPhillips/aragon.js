@@ -187,8 +187,9 @@ export default class Aragon {
     await this.initAccounts(options.accounts)
     await this.initAcl(Object.assign({ aclAddress }, options.acl))
     await this.initIdentityProviders()
-    await this.initTokenRegistry()
     this.initApps()
+    //Token Registry relies on initApps()
+    this.initTokenRegistry()
     this.initForwarders()
     this.initAppIdentifiers()
     this.initNetwork()
@@ -1005,8 +1006,18 @@ export default class Aragon {
    */
   async initTokenRegistry () {
     console.log('Init Token Registry')
+    //Create tokens registry
     this.tokens = new TokenRegistry
-    return this.tokens.init()
+    //Get vault
+    const apps = await this.apps.pipe(first()).toPromise()
+    const vault = apps[apps.findIndex(app => app.name === 'Vault')].proxyAddress.toLowerCase()
+    //Initialize token registry with vault address
+    return this.tokens.init(vault)
+  }
+
+  async registerToken (address) {
+    //Register token
+    return this.tokens.register(this.web3, address)
   }
 
   /**

@@ -1,6 +1,14 @@
 import Cache from '../cache'
-import { from, BehaviorSubject } from 'rxjs'
-import { map, first, pluck } from 'rxjs/operators'
+import { concat, fromEvent, of, Subject } from 'rxjs'
+import { map, filter } from 'rxjs/operators'
+import BigNumber from 'bignumber.js'
+import tokenDecimalsAbi from '../../abi/tokens/token-decimals.json'
+import tokenNameAbi from '../../abi/tokens/token-name.json'
+import tokenSymbolAbi from '../../abi/tokens/token-symbol.json'
+import tokenBalanceAbi from '../../abi/tokens/token-balanceof.json'
+import tokenEventsAbi from '../../abi/tokens/token-events.json'
+
+const tokenAbi = [].concat(tokenDecimalsAbi, tokenNameAbi, tokenSymbolAbi, tokenBalanceAbi, tokenEventsAbi)
 
 /**
  * Token registry
@@ -12,11 +20,14 @@ export default class TokenRegistry {
    * Create a new token registry attached to a locally-stored cache.
    */
   constructor () {
-    this.tokenCache = new Cache('tokenRegistry')
+    //this.tokenCache = new Cache('tokenRegistry')
+    this.tokenRegistry = new Object()
+    this.tokenObservable = new Subject()
   }
 
-  async init () {
-    await this.tokenCache.init()
+  init (vault) {
+    //await this.tokenCache.init()
+    this.vault = vault
   }
 
   /**
@@ -26,33 +37,57 @@ export default class TokenRegistry {
    * @return {Promise} Resolved metadata, null when not found, rejected on error
    */
   resolve (address) {
-    address = address.toLowerCase()
-    return this.tokenCache.get(address)
+    return this.tokenRegistry[address.toLowerCase()]
   }
 
   /**
    * Register a token
    *
+   * @param  {Object} web3     A web3 object
    * @param  {string} address  Address to resolve
-   * @param  {Object} metadata Metadata to register
    * @return {Promise} Resolved with saved address and metadata or rejected on error
    */
-  async register (address, { name = '', symbol = '', balance = ''}) {
-    if (!name) {
-      throw new Error('name is required when registering token')
-    }
-    if (!symbol) {
-      throw new Error('symbol is required when registering token')
-    }
-    if (!balance) {
-      throw new Error('balance is required when registering token')
-    }
-
+  async register (web3, address) {
     address = address.toLowerCase()
+    const contract = new web3.eth.Contract(
+      tokenAbi,
+      address
+    )
+    console.log('Contract: ', contract)
 
-    const metadata = { name, symbol, balance }
+    //Get initial values
+    const [name, symbol, decimals, balance ] = await Promise.all([
+      contract.methods.name().call(),
+      contract.methods.symbol().call(),
+      contract.methods.decimals().call(),
+      contract.methods.balanceOf(this.vault).call(),
+    ])
+    const metadata = {name, symbol, decimals, balance}
+    console.log('Metadata: ', metadata)
+
     // First save it in the cache
-    await this.tokenCache.set(address, metadata)
+    //await this.tokenCache.set(address, metadata)
+    this.tokenRegistry[address] = metadata
+    console.log('Token Registry: ', this.tokenRegistry)
+    this.tokenObservable.next({ address, metadata })
+    console.log('Token Registered')
+
+    //Subscribe to token transfer events and update token balance on change
+    fromEvent(
+      contract.events.Transfer(),
+      'data'
+    ).pipe(
+      filter(event => (event.returnValues.to.toLowerCase() === this.vault || event.returnValues.from.toLowerCase() === this.vault))
+    ).subscribe(async (event) => {
+      console.log('Token Transfer Event: ', event)
+      const { balance } = this.resolve(address)
+      if(event.returnValues.to.toLowerCase() === this.vault){
+        this.modify(address, (new BigNumber(balance)).plus(event.returnValues.value).toString())
+      }
+      if(event.returnValues.from.toLowerCase() === this.vault){
+        this.modify(address, (new BigNumber(balance)).minus(event.returnValues.value).toString())
+      }
+    })
 
     return Promise.resolve({ address, metadata })
   }
@@ -64,16 +99,16 @@ export default class TokenRegistry {
    * @param  {Object} balance  New balance
    * @return {Promise} Resolved with saved address and balance or rejected on error
    */
-   async modify (address, balance = '') {
+   modify (address, balance = '') {
      if (!balance) {
        throw new Error('balance is required when registering token')
      }
 
      address = address.toLowerCase()
-     const metadata = await this.resolve(address)
+     const metadata = this.resolve(address)
      metadata.balance = balance
-     await this.tokenCache.set(address, metadata)
-
+     this.tokenRegistry[address] = metadata
+     this.tokenObservable.next({ address, metadata })
      return Promise.resolve({ address, metadata })
    }
 
@@ -82,19 +117,20 @@ export default class TokenRegistry {
    *
    * @return {Observable}
    */
-  async subscribe () {
+  observe () {
     //Get initial token values
-    /*
-    const allTokens$ = this.getAll()
-    const changedToken$ = this.tokenCache.changes.pipe(
-      map(({key, value}) => {
+    const allTokens = of(this.getAll())
+    //Pipe and transform observable
+    const changedToken = this.tokenObservable.pipe(
+      map(({address, metadata}) => {
         const change = new Object()
-        change[key] = value
+        change[address] = metadata
         return change
       })
     )
-    return concat(allTokens$, changedToken$)
-    */
+    //Concat initial token values with new observations
+    return concat(allTokens, changedToken)
+
     /*
     const allTokens$ = this.getAll()
     const result$ = from(allTokens$)
@@ -109,10 +145,18 @@ export default class TokenRegistry {
     )
     return result$
     */
-
-    const allTokens = await this.getAll()
-    const source = new BehaviorSubject(allTokens)
-    console.log('All Tokens: ', allTokens)
+    /*
+    const source = new BehaviorSubject({})
+    this.getAll().then(allToken => {
+      console.log('All Tokens: ', allTokens)
+      source.next(allTokens)
+    })
+    /*
+    const allTokens = {
+      '0x48e9d06106f9b65963472965245f4c676fbd72d6': {name: "Dai Stablecoin", symbol: "DAI", balance: "133000000000000000000"},
+      '0xa2be6439d8def6dd6523aefd02a1356772d15569': {name: "Dai Stablecoin", symbol: "DAI", balance: "0"}
+    }*/
+    /*
     this.tokenCache.changes.subscribe(
       ({key, value}) => {
         console.log('New Change: ' + key + ' ', value)
@@ -120,7 +164,8 @@ export default class TokenRegistry {
         source.next(allTokens)
       }
     )
-    return source.getValue()
+    return source
+    */
   }
 
   /**
@@ -128,8 +173,8 @@ export default class TokenRegistry {
    *
    * @return {Promise} Resolved with an object of all identities when completed
    */
-  async getAll () {
-    return this.tokenCache.getAll()
+  getAll () {
+    return this.tokenRegistry
   }
 
   /**
@@ -137,7 +182,7 @@ export default class TokenRegistry {
    *
    * @return {Promise} Resolved when completed
    */
-  async remove (address) {
-    await this.tokenCache.remove(address.toLowerCase())
+  remove (address) {
+    delete this.tokenRegistry[address.toLowerCase()]
   }
 }
