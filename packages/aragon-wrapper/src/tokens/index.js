@@ -1,4 +1,4 @@
-import Cache from '../cache'
+//import Cache from '../cache'
 import { concat, fromEvent, of, Subject } from 'rxjs'
 import { map, filter } from 'rxjs/operators'
 import BigNumber from 'bignumber.js'
@@ -7,9 +7,10 @@ import tokenNameAbi from '../../abi/tokens/token-name.json'
 import tokenSymbolAbi from '../../abi/tokens/token-symbol.json'
 import tokenBalanceAbi from '../../abi/tokens/token-balanceof.json'
 import tokenEventsAbi from '../../abi/tokens/token-events.json'
+import vaultAbi from '../../abi/vault/vault-events.json'
 
 const tokenAbi = [].concat(tokenDecimalsAbi, tokenNameAbi, tokenSymbolAbi, tokenBalanceAbi, tokenEventsAbi)
-
+const ETHER_TOKEN_FAKE_ADDRESS = '0x0000000000000000000000000000000000000000'
 /**
  * Token registry
  *
@@ -25,9 +26,47 @@ export default class TokenRegistry {
     this.tokenObservable = new Subject()
   }
 
-  init (vault) {
-    //await this.tokenCache.init()
-    this.vault = vault
+  async init (web3, kernelProxy) {
+    //await this.tokenCache.init
+    this.vault = (await kernelProxy.call('getRecoveryVault')).toLowerCase()
+    console.log('Vault: ', this.vault)
+    const vaultContract = new web3.eth.Contract(
+      vaultAbi,
+      this.vault
+    )
+    console.log('Vault Contract: ', vaultContract)
+    //Add ETH and watch the Vault's events to update the balance
+    const balance = await web3.eth.getBalance(this.vault)
+    console.log('Eth Balance: ', balance)
+    const metadata = {name: 'Ethereum', symbol: 'ETH', decimals: '18', balance}
+    console.log('Eth Metadata: ', metadata)
+    //Register ETH
+    this.tokenRegistry[ETHER_TOKEN_FAKE_ADDRESS] = metadata
+    console.log('Token Registry: ', this.tokenRegistry)
+    //Emit on observable
+    this.tokenObservable.next({ address: ETHER_TOKEN_FAKE_ADDRESS, metadata })
+    //Watch VaultTransfer for ETH
+    fromEvent(
+      vaultContract.events.VaultTransfer(),
+      'data'
+    ).pipe(
+      filter(event => event.returnValues.token === ETHER_TOKEN_FAKE_ADDRESS)
+    ).subscribe(async (event) => {
+      console.log('Token Transfer Event: ', event)
+      const { balance } = this.resolve(ETHER_TOKEN_FAKE_ADDRESS)
+      this.modify(ETHER_TOKEN_FAKE_ADDRESS, (new BigNumber(balance)).minus(event.returnValues.amount).toString())
+    })
+    //Watch VaultDeposit for ETH
+    fromEvent(
+      vaultContract.events.VaultDeposit(),
+      'data'
+    ).pipe(
+      filter(event => event.returnValues.token === ETHER_TOKEN_FAKE_ADDRESS)
+    ).subscribe(async (event) => {
+      console.log('Token Transfer Event: ', event)
+      const { balance } = this.resolve(ETHER_TOKEN_FAKE_ADDRESS)
+      this.modify(ETHER_TOKEN_FAKE_ADDRESS, (new BigNumber(balance)).plus(event.returnValues.amount).toString())
+    })
   }
 
   /**
@@ -48,48 +87,53 @@ export default class TokenRegistry {
    * @return {Promise} Resolved with saved address and metadata or rejected on error
    */
   async register (web3, address) {
-    address = address.toLowerCase()
-    const contract = new web3.eth.Contract(
-      tokenAbi,
-      address
-    )
-    console.log('Contract: ', contract)
+    console.log('Resolve Address: ', this.resolve(address))
+    if(this.resolve(address)){
+      return Promise.resolve({ address, metadata: this.resolve(address) })
+    } else {
+      address = address.toLowerCase()
+      const contract = new web3.eth.Contract(
+        tokenAbi,
+        address
+      )
+      console.log('Contract: ', contract)
 
-    //Get initial values
-    const [name, symbol, decimals, balance ] = await Promise.all([
-      contract.methods.name().call(),
-      contract.methods.symbol().call(),
-      contract.methods.decimals().call(),
-      contract.methods.balanceOf(this.vault).call(),
-    ])
-    const metadata = {name, symbol, decimals, balance}
-    console.log('Metadata: ', metadata)
+      //Get initial values
+      const [name, symbol, decimals, balance ] = await Promise.all([
+        contract.methods.name().call(),
+        contract.methods.symbol().call(),
+        contract.methods.decimals().call(),
+        contract.methods.balanceOf(this.vault).call(),
+      ])
+      const metadata = {name, symbol, decimals, balance}
+      console.log('Metadata: ', metadata)
 
-    // First save it in the cache
-    //await this.tokenCache.set(address, metadata)
-    this.tokenRegistry[address] = metadata
-    console.log('Token Registry: ', this.tokenRegistry)
-    this.tokenObservable.next({ address, metadata })
-    console.log('Token Registered')
+      // First save it in the cache
+      //await this.tokenCache.set(address, metadata)
+      this.tokenRegistry[address] = metadata
+      console.log('Token Registry: ', this.tokenRegistry)
+      this.tokenObservable.next({ address, metadata })
+      console.log('Token Registered')
 
-    //Subscribe to token transfer events and update token balance on change
-    fromEvent(
-      contract.events.Transfer(),
-      'data'
-    ).pipe(
-      filter(event => (event.returnValues.to.toLowerCase() === this.vault || event.returnValues.from.toLowerCase() === this.vault))
-    ).subscribe(async (event) => {
-      console.log('Token Transfer Event: ', event)
-      const { balance } = this.resolve(address)
-      if(event.returnValues.to.toLowerCase() === this.vault){
-        this.modify(address, (new BigNumber(balance)).plus(event.returnValues.value).toString())
-      }
-      if(event.returnValues.from.toLowerCase() === this.vault){
-        this.modify(address, (new BigNumber(balance)).minus(event.returnValues.value).toString())
-      }
-    })
+      //Subscribe to token transfer events and update token balance on change
+      fromEvent(
+        contract.events.Transfer(),
+        'data'
+      ).pipe(
+        filter(event => (event.returnValues.to.toLowerCase() === this.vault || event.returnValues.from.toLowerCase() === this.vault))
+      ).subscribe(async (event) => {
+        console.log('Token Transfer Event: ', event)
+        const { balance } = this.resolve(address)
+        if(event.returnValues.to.toLowerCase() === this.vault){
+          this.modify(address, (new BigNumber(balance)).plus(event.returnValues.value).toString())
+        }
+        if(event.returnValues.from.toLowerCase() === this.vault){
+          this.modify(address, (new BigNumber(balance)).minus(event.returnValues.value).toString())
+        }
+      })
 
-    return Promise.resolve({ address, metadata })
+      return Promise.resolve({ address, metadata })
+    }
   }
 
   /**
